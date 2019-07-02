@@ -10,7 +10,6 @@ from builtins import input
 from builtins import zip
 from builtins import next
 from builtins import str
-import sys
 import os
 import getpass
 import zipfile
@@ -29,13 +28,6 @@ from retriever.lib.cleanup import no_cleanup
 from retriever.lib.warning import Warning
 from urllib.request import urlretrieve
 from requests.exceptions import InvalidSchema
-from imp import reload
-
-encoding = ENCODING.lower()
-# sys removes the setdefaultencoding method at startup; reload to get it back
-reload(sys)
-if hasattr(sys, 'setdefaultencoding'):
-    sys.setdefaultencoding(encoding)
 
 
 class Engine(object):
@@ -58,6 +50,7 @@ class Engine(object):
     use_cache = True
     warnings = []
     script_table_registry = OrderedDict()
+    encoding = None
 
     def connect(self, force_reconnect=False):
         """Create a connection."""
@@ -203,7 +196,7 @@ class Engine(object):
                     name = []
                 yield (begin + name + [item])
 
-    def auto_create_table(self, table, url=None, filename=None, pk=None):
+    def auto_create_table(self, table, url=None, filename=None, pk=None, make=True):
         """Create table automatically by analyzing a data source and
         predicting column names, data types, delimiter, etc."""
         if url and not filename:
@@ -239,7 +232,8 @@ class Engine(object):
             self.table.columns = self.table.columns[:-1] + \
                                  [(self.table.ct_column, ("char", 50))] + \
                                  [self.table.columns[-1]]
-
+        if not make:
+            return self.table
         self.create_table()
 
     def auto_get_datatypes(self, pk, source, columns):
@@ -650,7 +644,7 @@ class Engine(object):
     def find_file(self, filename):
         """Check for an existing datafile."""
         for search_path in DATA_SEARCH_PATHS:
-            search_path = search_path.format(dataset=self.script.name)
+            search_path = search_path.format(dataset=self.script.name) if self.script else search_path
             file_path = os.path.normpath(os.path.join(search_path, filename))
             if file_exists(file_path):
                 return file_path
@@ -736,7 +730,6 @@ class Engine(object):
                 if not os.path.exists(self.opts['data_dir']):
                     os.makedirs(self.opts['data_dir'])
 
-
     def insert_data_from_archive(self, url, filenames):
         """Insert data from files located in an online archive. This function
         extracts the file, inserts the data, and deletes the file if raw data
@@ -807,11 +800,16 @@ class Engine(object):
 
     def set_engine_encoding(self):
         """Set up the encoding to be used."""
-        pass
+        self.encoding = ENCODING.lower()
+        if self.script and self.script.encoding:
+                self.encoding = self.script.encoding.lower()
 
     def set_table_delimiter(self, file_path):
         """Get the delimiter from the data file and set it."""
-        dataset_file = open_fr(file_path)
+        if os.name == "nt":
+            dataset_file = open_fr(file_path)
+        else:
+            dataset_file = open_fr(file_path, encoding=self.encoding)
         self.auto_get_delimiter(dataset_file.readline())
         dataset_file.close()
 
@@ -847,10 +845,11 @@ class Engine(object):
 
             csv_file_output = os.path.normpath(os.path.join(path if path else '',
                                                             table_name[0] + '.csv'))
-            csv_file = open_fw(csv_file_output)
-            csv_writer = open_csvw(csv_file)
             self.get_cursor()
             self.set_engine_encoding()
+            csv_file = open_fw(csv_file_output, encoding=self.encoding)
+            csv_writer = open_csvw(csv_file)
+
             limit = ""
             cols = "*"
             if select_columns:
@@ -912,9 +911,10 @@ class Engine(object):
         """
         if not self.table.delimiter:
             self.set_table_delimiter(filename)
-
-        dataset_file = open_fr(filename)
-
+        if os.name == "nt":
+            dataset_file = open_fr(filename)
+        else:
+            dataset_file = open_fr(filename, encoding=self.encoding)
         if self.table.fixed_width:
             for row in dataset_file:
                 yield self.extract_fixed_width(row)
